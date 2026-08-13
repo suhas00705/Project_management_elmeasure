@@ -48,25 +48,6 @@ app.get('/api/leads', async (req, res) => {
   }
 });
 
-// ---- /api/potentials ----
-// Zoho's REST module name for "Potentials" (as shown in the CRM UI) is "Deals".
-const POTENTIALS_FIELDS = [
-  'Deal_Name', 'Account_Name', 'Owner', 'Stage',
-  'Amount', 'Product_Solution_Type_Multi_Select',
-  'Region', 'Sub_Region', 'Probability',
-  'Closing_Date', 'Created_Time'
-].join(',');
-
-app.get('/api/potentials', async (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  try {
-    const deals = await fetchAllRecords('Deals', POTENTIALS_FIELDS);
-    res.json({ deals, count: deals.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ---- Fallback: always serve the dashboard for any other route ----
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
