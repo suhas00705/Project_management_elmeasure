@@ -33,7 +33,7 @@ async function fetchAllRecords(module, fields) {
 
 // ---- /api/leads ----
 const LEADS_FIELDS = [
-  'Full_Name', 'Company', 'Owner', 'Lead_Status',
+  'Full_Name', 'Company', 'Account_Name', 'Owner', 'Lead_Status',
   'Order_Value', 'Product_Solution_Type_Multi_Select',
   'Region', 'Created_Time'
 ].join(',');
