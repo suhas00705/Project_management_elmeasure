@@ -1,7 +1,9 @@
 {
   "functions": {
-    "api/leads.js": {
-      "maxDuration": 60
-    }
-  }
+    "api/leads.js": { "maxDuration": 30 },
+    "api/sync-leads.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/sync-leads", "schedule": "0 2 * * *" }
+  ]
 }
