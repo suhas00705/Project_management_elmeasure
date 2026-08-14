@@ -15,9 +15,15 @@ module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
     const leads = await zohoAuth.fetchRecordsSince('Leads', LEADS_FIELDS, FY_START);
-    const written = await supabaseLeads.upsertLeads(leads);
+    const leadsWritten = await supabaseLeads.upsertLeads(leads);
+
+    const engineers = await zohoAuth.fetchSalesEngineers();
+    const engineersWritten = await supabaseLeads.upsertEngineers(engineers);
+    await supabaseLeads.pruneEngineers(engineers.map(e => e.id));
+
     res.status(200).json({
-      synced: written,
+      synced: leadsWritten,
+      engineersSynced: engineersWritten,
       fyStart: FY_START,
       syncedAt: new Date().toISOString()
     });
