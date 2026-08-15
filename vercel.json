@@ -1,9 +1,12 @@
 {
   "functions": {
     "api/leads.js": { "maxDuration": 30 },
-    "api/sync-leads.js": { "maxDuration": 60 }
+    "api/sync-leads.js": { "maxDuration": 60 },
+    "api/potentials.js": { "maxDuration": 30 },
+    "api/sync-potentials.js": { "maxDuration": 60 }
   },
   "crons": [
-    { "path": "/api/sync-leads", "schedule": "0 2 * * *" }
+    { "path": "/api/sync-leads", "schedule": "0 2 * * *" },
+    { "path": "/api/sync-potentials", "schedule": "15 2 * * *" }
   ]
 }
