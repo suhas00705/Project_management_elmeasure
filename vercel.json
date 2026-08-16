@@ -5,7 +5,8 @@
     "api/potentials.js": { "maxDuration": 30 },
     "api/sync-potentials.js": { "maxDuration": 60 },
     "api/sync-pm-prepaid.js": { "maxDuration": 60 },
-    "api/sync-pm-baskets.js": { "maxDuration": 60 }
+    "api/sync-pm-baskets.js": { "maxDuration": 60 },
+    "api/sync-pm-lastyear.js": { "maxDuration": 60 }
   },
   "crons": [
     { "path": "/api/sync-leads", "schedule": "0 2 * * *" },
@@ -15,6 +16,8 @@
     { "path": "/api/sync-pm-prepaid", "schedule": "24 2 * * *" },
     { "path": "/api/sync-pm-baskets", "schedule": "26 2 * * *" },
     { "path": "/api/sync-pm-baskets", "schedule": "30 2 * * *" },
-    { "path": "/api/sync-pm-baskets", "schedule": "34 2 * * *" }
+    { "path": "/api/sync-pm-baskets", "schedule": "34 2 * * *" },
+    { "path": "/api/sync-pm-lastyear", "schedule": "38 2 * * *" },
+    { "path": "/api/sync-pm-lastyear", "schedule": "42 2 * * *" }
   ]
 }
