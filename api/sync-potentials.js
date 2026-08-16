@@ -2,7 +2,7 @@ const zohoAuth = require('../lib/zohoAuth');
 const supabasePotentials = require('../lib/supabasePotentials');
 
 const POTENTIALS_FIELDS = [
-  'Deal_Name', 'Account_Name', 'Owner', 'Region', 'Amount', 'Stage',
+  'Deal_Name', 'Account_Name', 'Owner', 'Region', 'Amount', 'Stage', 'Probability',
   'Product_Solution_Type_Multi_Select', 'Created_Time'
 ].join(',');
 
