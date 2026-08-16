@@ -4,11 +4,12 @@ const SUPABASE_URL = 'https://xfdfbrfudsaxqgpsdboa.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhmZGZicmZ1ZHNheHFncHNkYm9hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3OTA1MzgsImV4cCI6MjA5NzM2NjUzOH0.sfUC5Mn_d7-FGkvQHyD01kdGM81TjG4VWzXoFv43n94';
 const DASHBOARD_TABLE_URL = `${SUPABASE_URL}/rest/v1/dashboard_data`;
 const PM_ROW_ID = 'pm';
+const CURSOR_ROW_ID = 'pm-prepaid-sync-cursor';
 
-const NAGENDRAN_OWNER_ID = '1870461000070455183'; // Nagendran K
-const FY_START = '2026-04-01T00:00:00+05:30'; // FY2026-27
-
+const NAGENDRAN_OWNER_ID = '1870461000070455183';
+const FY_START = '2026-04-01T00:00:00+05:30';
 const MONTH_NAMES = ['', 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const TIME_BUDGET_MS = 45000;
 
 function getISTYearMonth(isoString) {
   const match = (isoString || '').match(/^(\d{4})-(\d{2})-\d{2}/);
@@ -16,115 +17,189 @@ function getISTYearMonth(isoString) {
   return { year: parseInt(match[1], 10), month: parseInt(match[2], 10) };
 }
 
-// Generic cursor-paginated fetch against any Zoho module, filtered by Created_Time.
-async function fetchAllSince(moduleName, fields, accessToken, apiDomain) {
-  const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
-  let records = [];
-  let page = 1;
-  let pageToken = null;
-  let more = true;
-  const sinceDate = new Date(FY_START);
-  const MAX_ITER = 200; // safety cap
-  let iter = 0;
+async function getCursor() {
+  const res = await fetch(`${DASHBOARD_TABLE_URL}?id=eq.${CURSOR_ROW_ID}&select=payload`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+  });
+  if (!res.ok) throw new Error(`Supabase cursor read failed: ${res.status}`);
+  const rows = await res.json();
+  return rows[0]?.payload || null;
+}
 
-  while (more && iter < MAX_ITER) {
-    iter++;
-    let url = `${apiDomain}/crm/v8/${moduleName}?fields=${fields}&per_page=200&sort_by=Created_Time&sort_order=desc`;
-    url += pageToken ? `&page_token=${pageToken}` : `&page=${page}`;
+async function saveCursor(state) {
+  const res = await fetch(DASHBOARD_TABLE_URL, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal'
+    },
+    body: JSON.stringify({ id: CURSOR_ROW_ID, payload: state, updated_at: new Date().toISOString() })
+  });
+  if (!res.ok) throw new Error(`Supabase cursor save failed: ${res.status}`);
+}
+
+async function clearCursor() {
+  await fetch(`${DASHBOARD_TABLE_URL}?id=eq.${CURSOR_ROW_ID}`, {
+    method: 'DELETE',
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+  });
+}
+
+function freshState() {
+  return {
+    stage: 'products',
+    targetProductIds: null,
+    excludedOrderIds: null,
+    excludedInvoiceIds: null,
+    obMonthly: {}, obMatched: 0, obScanned: 0,
+    invMonthly: {}, invMatched: 0, invScanned: 0,
+    page: 1, pageToken: null,
+    basketIndex: 0
+  };
+}
+
+async function stepProducts(state, accessToken, apiDomain, deadline) {
+  const basketValues = ['Prepaid', 'Smart Meters'];
+  const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
+  const ids = new Set(state.targetProductIds || []);
+
+  while (state.basketIndex < basketValues.length) {
+    if (Date.now() > deadline) return false;
+    const basket = basketValues[state.basketIndex];
+    const criteria = encodeURIComponent(`(Product_Basket:equals:${basket})`);
+    const url = `${apiDomain}/crm/v8/Products/search?criteria=${criteria}&fields=id&per_page=200&page=${state.page}`;
+    const res = await fetch(url, { headers: authHeader });
+    if (res.status === 204) { state.basketIndex++; state.page = 1; continue; }
+    if (!res.ok) throw new Error(`Products search failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    (data.data || []).forEach(p => ids.add(p.id));
+    if (data.info?.more_records) {
+      state.page++;
+    } else {
+      state.basketIndex++;
+      state.page = 1;
+    }
+  }
+  state.targetProductIds = [...ids];
+  return true;
+}
+
+async function stepExcludedParents(state, moduleName, idsFieldName, accessToken, apiDomain, deadline) {
+  const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
+  const ids = new Set(state[idsFieldName] || []);
+  const sinceDate = new Date(FY_START);
+
+  while (Date.now() < deadline) {
+    let url = `${apiDomain}/crm/v8/${moduleName}?fields=id,Owner,Created_Time&per_page=200&sort_by=Created_Time&sort_order=desc`;
+    url += state.pageToken ? `&page_token=${state.pageToken}` : `&page=${state.page}`;
     const res = await fetch(url, { headers: authHeader });
     if (res.status === 204) break;
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Zoho ${moduleName} fetch failed: ${res.status} ${errText}`);
-    }
+    if (!res.ok) throw new Error(`${moduleName} fetch failed: ${res.status} ${await res.text()}`);
     const data = await res.json();
     const pageRecords = data.data || [];
     if (!pageRecords.length) break;
 
-    const cutoffHit = pageRecords.some(r => {
-      const ct = r.Created_Time;
-      return ct && new Date(ct) < sinceDate;
+    let hitCutoff = false;
+    pageRecords.forEach(r => {
+      if (r.Created_Time && new Date(r.Created_Time) < sinceDate) { hitCutoff = true; return; }
+      if (r.Owner && r.Owner.id === NAGENDRAN_OWNER_ID) ids.add(r.id);
     });
-    if (cutoffHit) {
-      records = records.concat(pageRecords.filter(r => r.Created_Time && new Date(r.Created_Time) >= sinceDate));
-      break;
+    state[idsFieldName] = [...ids];
+    if (hitCutoff || !data.info?.more_records) {
+      state.page = 1; state.pageToken = null;
+      return true;
     }
-    records = records.concat(pageRecords);
-    more = data.info?.more_records || false;
-    pageToken = data.info?.next_page_token || null;
-    page++;
+    state.pageToken = data.info?.next_page_token || null;
+    state.page++;
   }
-  return records;
+  state[idsFieldName] = [...ids];
+  return false;
 }
 
-// Fetch every Product whose Product_Basket matches one of the given values.
-async function fetchTargetProductIds(basketValues, accessToken, apiDomain) {
+async function stepAggregateItems(state, moduleName, monthlyField, matchedField, scannedField, targetProductIds, excludedParentIds, accessToken, apiDomain, deadline) {
   const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
-  const ids = new Set();
-  for (const basket of basketValues) {
-    let page = 1;
-    let more = true;
-    while (more) {
-      const criteria = encodeURIComponent(`(Product_Basket:equals:${basket})`);
-      const url = `${apiDomain}/crm/v8/Products/search?criteria=${criteria}&fields=id&per_page=200&page=${page}`;
-      const res = await fetch(url, { headers: authHeader });
-      if (res.status === 204) break;
-      if (!res.ok) { more = false; break; }
-      const data = await res.json();
-      (data.data || []).forEach(p => ids.add(p.id));
-      more = data.info?.more_records || false;
-      page++;
+  const sinceDate = new Date(FY_START);
+  const targetSet = new Set(targetProductIds);
+  const excludedSet = new Set(excludedParentIds);
+
+  while (Date.now() < deadline) {
+    let url = `${apiDomain}/crm/v8/${moduleName}?fields=Product_Name,Net_Total,Created_Time,Parent_Id&per_page=200&sort_by=Created_Time&sort_order=desc`;
+    url += state.pageToken ? `&page_token=${state.pageToken}` : `&page=${state.page}`;
+    const res = await fetch(url, { headers: authHeader });
+    if (res.status === 204) break;
+    if (!res.ok) throw new Error(`${moduleName} fetch failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    const pageRecords = data.data || [];
+    if (!pageRecords.length) break;
+
+    let hitCutoff = false;
+    pageRecords.forEach(item => {
+      if (item.Created_Time && new Date(item.Created_Time) < sinceDate) { hitCutoff = true; return; }
+      state[scannedField]++;
+      const productId = item.Product_Name?.id;
+      const parentId = item.Parent_Id?.id;
+      if (!productId || !targetSet.has(productId)) return;
+      if (parentId && excludedSet.has(parentId)) return;
+      const ym = getISTYearMonth(item.Created_Time);
+      if (!ym) return;
+      const monthLabel = MONTH_NAMES[ym.month];
+      state[monthlyField][monthLabel] = (state[monthlyField][monthLabel] || 0) + (item.Net_Total || 0) / 100000;
+      state[matchedField]++;
+    });
+
+    if (hitCutoff || !data.info?.more_records) {
+      state.page = 1; state.pageToken = null;
+      return true;
     }
+    state.pageToken = data.info?.next_page_token || null;
+    state.page++;
   }
-  return ids;
-}
-
-// Fetch Owner for every parent Sales_Orders/Invoices record in the FY window,
-// returning a Set of record IDs that should be EXCLUDED (owned by Nagendran K).
-async function fetchExcludedParentIds(moduleName, accessToken, apiDomain) {
-  const records = await fetchAllSince(moduleName, 'id,Owner,Created_Time', accessToken, apiDomain);
-  const excluded = new Set();
-  records.forEach(r => {
-    if (r.Owner && r.Owner.id === NAGENDRAN_OWNER_ID) excluded.add(r.id);
-  });
-  return excluded;
-}
-
-// Aggregate a line-item module (Ordered_Items / Invoiced_Items) into monthly
-// totals (in Lakhs), restricted to the target products and excluding any
-// line item whose parent record is owned by Nagendran K.
-async function aggregateMonthly(moduleName, accessToken, apiDomain, targetProductIds, excludedParentIds) {
-  const items = await fetchAllSince(moduleName, 'Product_Name,Net_Total,Created_Time,Parent_Id', accessToken, apiDomain);
-  const monthly = {};
-  let matchedCount = 0;
-  items.forEach(item => {
-    const productId = item.Product_Name?.id;
-    const parentId = item.Parent_Id?.id;
-    if (!productId || !targetProductIds.has(productId)) return;
-    if (parentId && excludedParentIds.has(parentId)) return;
-    const ym = getISTYearMonth(item.Created_Time);
-    if (!ym) return;
-    const monthLabel = MONTH_NAMES[ym.month];
-    monthly[monthLabel] = (monthly[monthLabel] || 0) + (item.Net_Total || 0) / 100000; // convert to Lakhs
-    matchedCount++;
-  });
-  return { monthly, matchedCount, totalFetched: items.length };
+  return false;
 }
 
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  const startTime = Date.now();
+  const deadline = startTime + TIME_BUDGET_MS;
+
   try {
+    const forceRestart = req.query?.restart === '1';
+    let state = forceRestart ? null : await getCursor();
+    if (!state) state = freshState();
+
     const accessToken = await zohoAuth.getZohoAccessToken();
     const apiDomain = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com';
 
-    const targetProductIds = await fetchTargetProductIds(['Prepaid', 'Smart Meters'], accessToken, apiDomain);
-    const excludedOrders = await fetchExcludedParentIds('Sales_Orders', accessToken, apiDomain);
-    const excludedInvoices = await fetchExcludedParentIds('Invoices', accessToken, apiDomain);
+    if (state.stage === 'products') {
+      const done = await stepProducts(state, accessToken, apiDomain, deadline);
+      if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: state.stage, message: 'Fetching target products, run again to continue.' }); }
+      state.stage = 'excludedOrders';
+    }
 
-    const obResult = await aggregateMonthly('Ordered_Items', accessToken, apiDomain, targetProductIds, excludedOrders);
-    const invResult = await aggregateMonthly('Invoiced_Items', accessToken, apiDomain, targetProductIds, excludedInvoices);
+    if (state.stage === 'excludedOrders') {
+      const done = await stepExcludedParents(state, 'Sales_Orders', 'excludedOrderIds', accessToken, apiDomain, deadline);
+      if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: state.stage, excludedSoFar: state.excludedOrderIds.length, message: 'Scanning Sales Orders for Nagendran exclusions, run again to continue.' }); }
+      state.stage = 'excludedInvoices';
+    }
 
-    // Read the existing 'pm' row so we only touch obActuals/invActuals, preserving everything else
+    if (state.stage === 'excludedInvoices') {
+      const done = await stepExcludedParents(state, 'Invoices', 'excludedInvoiceIds', accessToken, apiDomain, deadline);
+      if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: state.stage, excludedSoFar: state.excludedInvoiceIds.length, message: 'Scanning Invoices for Nagendran exclusions, run again to continue.' }); }
+      state.stage = 'obItems';
+    }
+
+    if (state.stage === 'obItems') {
+      const done = await stepAggregateItems(state, 'Ordered_Items', 'obMonthly', 'obMatched', 'obScanned', state.targetProductIds, state.excludedOrderIds, accessToken, apiDomain, deadline);
+      if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: state.stage, scannedSoFar: state.obScanned, matchedSoFar: state.obMatched, obMonthlySoFar: state.obMonthly, message: 'Aggregating Order Booking line items, run again to continue.' }); }
+      state.stage = 'invItems';
+    }
+
+    if (state.stage === 'invItems') {
+      const done = await stepAggregateItems(state, 'Invoiced_Items', 'invMonthly', 'invMatched', 'invScanned', state.targetProductIds, state.excludedInvoiceIds, accessToken, apiDomain, deadline);
+      if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: state.stage, scannedSoFar: state.invScanned, matchedSoFar: state.invMatched, invMonthlySoFar: state.invMonthly, message: 'Aggregating Invoicing line items, run again to continue.' }); }
+      state.stage = 'done';
+    }
+
     const getRes = await fetch(`${DASHBOARD_TABLE_URL}?id=eq.${PM_ROW_ID}&select=payload`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
     });
@@ -132,39 +207,29 @@ module.exports = async (req, res) => {
     const rows = await getRes.json();
     const existingPayload = rows[0]?.payload || {};
 
-    const roundedOB = Object.fromEntries(Object.entries(obResult.monthly).map(([k,v]) => [k, Math.round(v*10)/10]));
-    const roundedInv = Object.fromEntries(Object.entries(invResult.monthly).map(([k,v]) => [k, Math.round(v*10)/10]));
+    const roundedOB = Object.fromEntries(Object.entries(state.obMonthly).map(([k,v]) => [k, Math.round(v*10)/10]));
+    const roundedInv = Object.fromEntries(Object.entries(state.invMonthly).map(([k,v]) => [k, Math.round(v*10)/10]));
 
-    const newPayload = {
-      ...existingPayload,
-      obActuals: roundedOB,
-      invActuals: roundedInv,
-      updatedAt: new Date().toISOString()
-    };
+    const newPayload = { ...existingPayload, obActuals: roundedOB, invActuals: roundedInv, updatedAt: new Date().toISOString() };
 
     const putRes = await fetch(DASHBOARD_TABLE_URL, {
       method: 'POST',
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates,return=minimal'
-      },
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ id: PM_ROW_ID, payload: newPayload, updated_at: newPayload.updatedAt })
     });
-    if (!putRes.ok) {
-      const errText = await putRes.text();
-      throw new Error(`Supabase write failed: ${putRes.status} ${errText}`);
-    }
+    if (!putRes.ok) throw new Error(`Supabase write failed: ${putRes.status} ${await putRes.text()}`);
+
+    await clearCursor();
 
     res.status(200).json({
-      targetProductCount: targetProductIds.size,
-      excludedOrdersCount: excludedOrders.size,
-      excludedInvoicesCount: excludedInvoices.size,
+      complete: true,
+      targetProductCount: state.targetProductIds.length,
+      excludedOrdersCount: state.excludedOrderIds.length,
+      excludedInvoicesCount: state.excludedInvoiceIds.length,
       obActuals: roundedOB,
       invActuals: roundedInv,
-      obDiagnostics: { matchedLineItems: obResult.matchedCount, totalLineItemsScanned: obResult.totalFetched },
-      invDiagnostics: { matchedLineItems: invResult.matchedCount, totalLineItemsScanned: invResult.totalFetched },
+      obDiagnostics: { matchedLineItems: state.obMatched, totalLineItemsScanned: state.obScanned },
+      invDiagnostics: { matchedLineItems: state.invMatched, totalLineItemsScanned: state.invScanned },
       writtenAt: newPayload.updatedAt
     });
   } catch (err) {
