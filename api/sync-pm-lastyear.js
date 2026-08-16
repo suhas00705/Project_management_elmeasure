@@ -9,7 +9,7 @@ const FY_START = '2025-04-01T00:00:00+05:30';
 const FY_END = '2026-04-01T00:00:00+05:30';
 const NAGENDRAN_OWNER_ID = '1870461000070455183';
 const MONTH_NAMES = ['', 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const TIME_BUDGET_MS = 20000; // shorter than Vercel's 60s limit AND short enough that Claude's own fetch tool won't time out waiting for a response, so this sync can be driven autonomously
+const TIME_BUDGET_MS = 52000; // stop well before Vercel's 60s hard limit, save progress, let the next call resume
 
 const TAB_BASKETS = {
   pm:    ['Prepaid', 'Smart Meters'],
