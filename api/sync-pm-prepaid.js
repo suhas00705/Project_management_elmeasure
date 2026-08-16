@@ -9,7 +9,7 @@ const CURSOR_ROW_ID = 'pm-prepaid-sync-cursor';
 const NAGENDRAN_OWNER_ID = '1870461000070455183';
 const FY_START = '2026-04-01T00:00:00+05:30';
 const MONTH_NAMES = ['', 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const TIME_BUDGET_MS = 45000;
+const TIME_BUDGET_MS = 52000; // stop well before Vercel's 60s hard limit, save progress, let the next call resume
 
 function getISTYearMonth(isoString) {
   const match = (isoString || '').match(/^(\d{4})-(\d{2})-\d{2}/);
