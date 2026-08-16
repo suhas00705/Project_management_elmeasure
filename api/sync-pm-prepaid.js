@@ -165,6 +165,35 @@ module.exports = async (req, res) => {
   try {
     const forceRestart = req.query?.restart === '1';
     let state = forceRestart ? null : await getCursor();
+
+    // If there's no in-progress cursor, check whether today's sync already
+    // completed - if so, skip entirely rather than starting a brand new
+    // full recompute (avoids wasteful/duplicate re-runs from the multiple
+    // scheduled attempts each morning).
+    if (!state && !forceRestart) {
+      const getRes = await fetch(`${DASHBOARD_TABLE_URL}?id=eq.${PM_ROW_ID}&select=payload`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+      });
+      if (getRes.ok) {
+        const rows = await getRes.json();
+        const lastUpdated = rows[0]?.payload?.updatedAt;
+        if (lastUpdated) {
+          // Compare IST calendar dates (UTC+5:30) so "today" matches the
+          // morning cron's local sense of day, not the server's UTC date.
+          const istOffsetMs = 5.5 * 60 * 60 * 1000;
+          const todayIST = new Date(Date.now() + istOffsetMs).toISOString().slice(0, 10);
+          const lastUpdatedIST = new Date(new Date(lastUpdated).getTime() + istOffsetMs).toISOString().slice(0, 10);
+          if (lastUpdatedIST === todayIST) {
+            return res.status(200).json({
+              complete: true, skipped: true,
+              message: `Already synced today (${lastUpdatedIST}) - skipping redundant re-run.`,
+              lastUpdated
+            });
+          }
+        }
+      }
+    }
+
     if (!state) state = freshState();
 
     const accessToken = await zohoAuth.getZohoAccessToken();

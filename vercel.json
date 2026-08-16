@@ -9,6 +9,8 @@
   "crons": [
     { "path": "/api/sync-leads", "schedule": "0 2 * * *" },
     { "path": "/api/sync-potentials", "schedule": "15 2 * * *" },
-    { "path": "/api/sync-pm-prepaid", "schedule": "30 2 * * *" }
+    { "path": "/api/sync-pm-prepaid", "schedule": "20 2 * * *" },
+    { "path": "/api/sync-pm-prepaid", "schedule": "22 2 * * *" },
+    { "path": "/api/sync-pm-prepaid", "schedule": "24 2 * * *" }
   ]
 }
