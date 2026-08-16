@@ -2,7 +2,7 @@ const zohoAuth = require('../lib/zohoAuth');
 
 const SUPABASE_URL = 'https://xfdfbrfudsaxqgpsdboa.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhmZGZicmZ1ZHNheHFncHNkYm9hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3OTA1MzgsImV4cCI6MjA5NzM2NjUzOH0.sfUC5Mn_d7-FGkvQHyD01kdGM81TjG4VWzXoFv43n94';
-const DASHBOARD_TABLE_URL = `${SUPABASE_URL}/rest/v1/dashboard_data`;
+const DASHBOARD_TABLE_URL = `${SUPABASE_URL}/rest/v1/PM_Desk`;
 const PM_ROW_ID = 'pm';
 const CURSOR_ROW_ID = 'pm-prepaid-sync-cursor';
 
