@@ -42,9 +42,35 @@ async function clearCursor() {
 }
 
 // Targeted column-only update: only 'qty' is sent, so PostgREST's upsert
-// leaves every other column (amount, probability, region, etc.) untouched.
-async function writeQtyBatch(qtyMap) {
-  const rows = Object.entries(qtyMap).map(([id, qty]) => ({ id, qty }));
+// leaves every other column (amount, probability, region, etc.) untouched -
+// but ONLY for ids that already exist. If we ever upsert an id that isn't
+// already cached (e.g. a Parent_Id pointing to something outside our
+// FY/open-only filters), PostgREST's upsert INSERTS a brand-new row instead,
+// with every other column NULL. Fetching the real set of cached ids first
+// and filtering against it prevents that entirely.
+async function fetchExistingPotentialIds() {
+  const ids = new Set();
+  const REQUEST_SIZE = 1000;
+  let from = 0;
+  while (true) {
+    const to = from + REQUEST_SIZE - 1;
+    const res = await fetch(`${POTENTIALS_CACHE_URL}?select=id`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, Range: `${from}-${to}` }
+    });
+    if (!res.ok && res.status !== 206) break;
+    const rows = await res.json();
+    if (!rows.length) break;
+    rows.forEach(r => ids.add(r.id));
+    from += rows.length;
+    if (rows.length < REQUEST_SIZE) break;
+  }
+  return ids;
+}
+
+async function writeQtyBatch(qtyMap, existingIds) {
+  const rows = Object.entries(qtyMap)
+    .filter(([id]) => existingIds.has(id)) // never let this create a new row
+    .map(([id, qty]) => ({ id, qty }));
   if (!rows.length) return;
   const res = await fetch(`${POTENTIALS_CACHE_URL}?on_conflict=id`, {
     method: 'POST',
@@ -105,18 +131,23 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Finished scanning - write all aggregated quantities in batches
+    // Finished scanning - write all aggregated quantities in batches, but
+    // only for ids that genuinely already exist in potentials_cache
+    const existingIds = await fetchExistingPotentialIds();
     const entries = Object.entries(state.qtyByParent);
     const BATCH = 300;
+    let skippedNonExisting = 0;
     for (let i = 0; i < entries.length; i += BATCH) {
       const batchMap = Object.fromEntries(entries.slice(i, i + BATCH));
-      await writeQtyBatch(batchMap);
+      skippedNonExisting += Object.keys(batchMap).filter(id => !existingIds.has(id)).length;
+      await writeQtyBatch(batchMap, existingIds);
     }
 
     await clearCursor();
     res.status(200).json({
       complete: true,
       totalLineItemsScanned: state.scanned,
+      skippedNonExistingParents: skippedNonExisting,
       matchedLineItems: state.matched,
       uniquePotentialsUpdated: entries.length,
       syncedAt: new Date().toISOString()
