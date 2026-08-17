@@ -73,14 +73,24 @@ async function stepProducts(state, accessToken, apiDomain, deadline) {
 
 async function stepExcludedParents(state, moduleName, idsFieldName, accessToken, apiDomain, deadline) {
   const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
-  const ids = new Set(state[idsFieldName] || []);
+  let ids = new Set(state[idsFieldName] || []);
   const sinceDate = new Date(FY_START);
   while (Date.now() < deadline) {
     let url = `${apiDomain}/crm/v8/${moduleName}?fields=id,Owner,Created_Time&per_page=200&sort_by=Created_Time&sort_order=desc`;
     url += state.pageToken ? `&page_token=${state.pageToken}` : `&page=${state.page}`;
     const res = await fetch(url, { headers: authHeader });
     if (res.status === 204) break;
-    if (!res.ok) throw new Error(`${moduleName} fetch failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      // Zoho's page_token expires if a saved cursor sits unused for a while.
+      // Safest recovery: discard this stage's progress and restart it clean
+      // from page 1 - resuming mid-stream would risk double-counting.
+      if (res.status === 400 && errText.includes('EXPIRED_VALUE') && errText.includes('page_token')) {
+        state.page = 1; state.pageToken = null; ids = new Set();
+        continue;
+      }
+      throw new Error(`${moduleName} fetch failed: ${res.status} ${errText}`);
+    }
     const data = await res.json();
     const pageRecords = data.data || [];
     if (!pageRecords.length) break;
@@ -109,7 +119,16 @@ async function stepAggregateItems(state, moduleName, monthlyField, detailsField,
     url += state.pageToken ? `&page_token=${state.pageToken}` : `&page=${state.page}`;
     const res = await fetch(url, { headers: authHeader });
     if (res.status === 204) break;
-    if (!res.ok) throw new Error(`${moduleName} fetch failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      if (res.status === 400 && errText.includes('EXPIRED_VALUE') && errText.includes('page_token')) {
+        state.page = 1; state.pageToken = null;
+        state[monthlyField] = {}; state[detailsField] = {};
+        state[matchedField] = 0; state[scannedField] = 0;
+        continue;
+      }
+      throw new Error(`${moduleName} fetch failed: ${res.status} ${errText}`);
+    }
     const data = await res.json();
     const pageRecords = data.data || [];
     if (!pageRecords.length) break;

@@ -154,7 +154,16 @@ async function stepAggregateItems(tab, moduleName, monthlyField, detailsField, m
     url += tab.pageToken ? `&page_token=${tab.pageToken}` : `&page=${tab.page}`;
     const res = await fetch(url, { headers: authHeader });
     if (res.status === 204) break;
-    if (!res.ok) throw new Error(`${moduleName} fetch failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      if (res.status === 400 && errText.includes('EXPIRED_VALUE') && errText.includes('page_token')) {
+        tab.page = 1; tab.pageToken = null;
+        tab[monthlyField] = {}; tab[detailsField] = {};
+        tab[matchedField] = 0; tab[scannedField] = 0;
+        continue;
+      }
+      throw new Error(`${moduleName} fetch failed: ${res.status} ${errText}`);
+    }
     const data = await res.json();
     const pageRecords = data.data || [];
     if (!pageRecords.length) break;
