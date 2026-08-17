@@ -183,8 +183,17 @@ async function stepAccountNames(state, accessToken, apiDomain, deadline) {
         const url = `${apiDomain}/crm/v8/${mod}?ids=${stillNeeded.join(',')}&fields=Account_Name,Deal_Name,Subject`;
         const res = await fetch(url, { headers: authHeader });
         if (res.ok) {
-          const data = await res.json();
-          (data.data || []).forEach(r => { state.accountNames[r.id] = r.Account_Name?.name || r.Deal_Name || r.Subject || '—'; });
+          // Zoho occasionally returns 200 with an empty body for this
+          // endpoint (e.g. none of the requested ids exist in this module) -
+          // res.json() throws on empty input, so parse defensively rather
+          // than letting that crash the whole sync.
+          try {
+            const text = await res.text();
+            if (text) {
+              const data = JSON.parse(text);
+              (data.data || []).forEach(r => { state.accountNames[r.id] = r.Account_Name?.name || r.Deal_Name || r.Subject || '—'; });
+            }
+          } catch (parseErr) { /* no usable data in this response - move on */ }
         }
       }
     }
