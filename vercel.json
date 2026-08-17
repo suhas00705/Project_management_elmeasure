@@ -14,13 +14,15 @@
     { "path": "/api/sync-potentials", "schedule": "15 2 * * *" },
     { "path": "/api/sync-potentials-qty", "schedule": "17 2 * * *" },
     { "path": "/api/sync-potentials-qty", "schedule": "19 2 * * *" },
-    { "path": "/api/sync-pm-prepaid", "schedule": "20 2 * * *" },
-    { "path": "/api/sync-pm-prepaid", "schedule": "22 2 * * *" },
-    { "path": "/api/sync-pm-prepaid", "schedule": "24 2 * * *" },
-    { "path": "/api/sync-pm-baskets", "schedule": "26 2 * * *" },
-    { "path": "/api/sync-pm-baskets", "schedule": "30 2 * * *" },
+    { "path": "/api/sync-pm-prepaid", "schedule": "30 2 * * *" },
+    { "path": "/api/sync-pm-prepaid", "schedule": "32 2 * * *" },
     { "path": "/api/sync-pm-baskets", "schedule": "34 2 * * *" },
-    { "path": "/api/sync-pm-lastyear", "schedule": "38 2 * * *" },
-    { "path": "/api/sync-pm-lastyear", "schedule": "42 2 * * *" }
+    { "path": "/api/sync-pm-baskets", "schedule": "36 2 * * *" },
+    { "path": "/api/sync-pm-prepaid", "schedule": "30 8 * * *" },
+    { "path": "/api/sync-pm-prepaid", "schedule": "32 8 * * *" },
+    { "path": "/api/sync-pm-baskets", "schedule": "34 8 * * *" },
+    { "path": "/api/sync-pm-baskets", "schedule": "36 8 * * *" },
+    { "path": "/api/sync-pm-lastyear", "schedule": "40 2 * * *" },
+    { "path": "/api/sync-pm-lastyear", "schedule": "44 2 * * *" }
   ]
 }
