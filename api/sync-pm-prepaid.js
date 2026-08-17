@@ -210,7 +210,11 @@ module.exports = async (req, res) => {
       }
     }
 
-    if (!state) state = freshState();
+    // If resuming a cursor saved by an older version of this file (e.g.
+    // before obDetails/accountNames tracking was added), merge in fresh
+    // defaults for any missing fields rather than crashing - preserves
+    // whatever progress was already made instead of losing it.
+    state = state ? { ...freshState(), ...state } : freshState();
     const accessToken = await zohoAuth.getZohoAccessToken();
     const apiDomain = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com';
 

@@ -221,7 +221,13 @@ module.exports = async (req, res) => {
   try {
     const forceRestart = req.query?.restart === '1';
     let state = forceRestart ? null : await getCursor();
-    if (!state) state = freshState();
+    // If resuming a cursor saved by an older version of this file (e.g.
+    // before obDetails/accountNames tracking was added), merge in fresh
+    // defaults for any missing fields (at the correct nesting level - the
+    // fields that matter live inside state.tab) rather than crashing.
+    state = state
+      ? { tabIndex: state.tabIndex ?? 0, tab: { ...freshTabState(), ...(state.tab || {}) } }
+      : freshState();
 
     const accessToken = await zohoAuth.getZohoAccessToken();
     const apiDomain = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com';
