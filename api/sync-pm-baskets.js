@@ -1,12 +1,10 @@
-// Auto-syncs OB (Order Booking) & Invoicing actuals for the LVS, Panel Meters,
-// ATES, ACCL and FDP tabs on the PM Review dashboard — same idea as
-// sync-pm-prepaid.js (which does this for the Prepaid Meters tab), generalized
-// to loop over several product baskets in one resumable run.
+// Auto-syncs OB (Order Booking) & Invoicing actuals, plus the underlying
+// order/invoice-level details, for the LVS, Panel Meters, ATES, ACCL and FDP
+// tabs on the PM Review dashboard.
 //
 // Unlike Prepaid, these 5 tabs do NOT exclude any particular owner's Sales
-// Orders/Invoices — every matching order/invoice line item counts, by design
-// (confirmed with the business owner; Prepaid's "Nagendran" exclusion is
-// specific to that product line and does not apply here).
+// Orders/Invoices - every matching order/invoice line item counts, by design
+// (confirmed with the business owner).
 //
 // Matches Zoho CRM Products by their (free-text) Product_Basket field:
 //   lvs   -> "SWITCHGEAR"
@@ -15,16 +13,10 @@
 //   accl  -> "ACCL", "ACCL-1Ph", "ACCL-3Ph"
 //   fdp   -> "FDP"
 //
-// Each tab's OB/Invoicing line items (Ordered_Items / Invoiced_Items) are
-// pulled since FY_START, summed by month (Net_Total, converted to Rs Lakhs),
-// and written into Supabase's PM_Desk table under that tab's own row id
-// (e.g. id='lvs'), merged with whatever else is already saved for that
-// product (fyOB/fyInv targets, weekly pulse, activities, visibility items —
-// none of that is touched, only obActuals/invActuals/updatedAt are replaced).
-//
-// Resumable: like sync-pm-prepaid.js, progress is checkpointed to Supabase
-// (a separate cursor row from Prepaid's) so a run that hits Vercel's ~60s
-// limit picks up exactly where it left off on the next scheduled invocation.
+// Stores both the monthly totals (obActuals/invActuals) AND the individual
+// matching orders/invoices per month (obDetails/invDetails, with account
+// names pre-resolved) so the dashboard's click-to-drill-down popup can read
+// straight from Supabase instead of doing a slow live Zoho query per click.
 const zohoAuth = require('../lib/zohoAuth');
 
 const SUPABASE_URL = 'https://xfdfbrfudsaxqgpsdboa.supabase.co';
@@ -34,7 +26,7 @@ const CURSOR_ROW_ID = 'pm-baskets-sync-cursor';
 
 const FY_START = '2026-04-01T00:00:00+05:30';
 const MONTH_NAMES = ['', 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const TIME_BUDGET_MS = 52000; // stop well before Vercel's 60s hard limit, save progress, let the next call resume
+const TIME_BUDGET_MS = 52000;
 
 const PRODUCT_CONFIGS = [
   { key: 'lvs',   baskets: ['SWITCHGEAR'] },
@@ -58,24 +50,16 @@ async function getCursor() {
   const rows = await res.json();
   return rows[0]?.payload || null;
 }
-
 async function saveCursor(state) {
   const res = await fetch(DASHBOARD_TABLE_URL, {
     method: 'POST',
-    headers: {
-      apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal'
-    },
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify({ id: CURSOR_ROW_ID, payload: state, updated_at: new Date().toISOString() })
   });
   if (!res.ok) throw new Error(`Supabase cursor save failed: ${res.status}`);
 }
-
 async function clearCursor() {
-  await fetch(`${DASHBOARD_TABLE_URL}?id=eq.${CURSOR_ROW_ID}`, {
-    method: 'DELETE',
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
-  });
+  await fetch(`${DASHBOARD_TABLE_URL}?id=eq.${CURSOR_ROW_ID}`, { method: 'DELETE', headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } });
 }
 
 async function getProductRow(productKey) {
@@ -87,8 +71,6 @@ async function getProductRow(productKey) {
   return rows[0] || null;
 }
 
-// Compares IST calendar dates (UTC+5:30) so "today" matches the morning
-// cron's local sense of day, not the server's UTC date.
 function isTodayIST(isoTimestamp) {
   if (!isoTimestamp) return false;
   const istOffsetMs = 5.5 * 60 * 60 * 1000;
@@ -101,18 +83,26 @@ function round1(obj) {
   return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, Math.round(v * 10) / 10]));
 }
 
-async function writeTabResult(productKey, obActuals, invActuals) {
+function attachAccountNames(detailsByMonth, accountNames) {
+  const out = {};
+  Object.entries(detailsByMonth).forEach(([month, arr]) => {
+    out[month] = arr.map(d => ({
+      account: accountNames[d.parentId] || '—',
+      value: d.value, date: d.date, product: d.product, orderId: d.parentId
+    })).sort((a, b) => new Date(b.date) - new Date(a.date));
+  });
+  return out;
+}
+
+async function writeTabResult(productKey, obActuals, invActuals, obDetails, invDetails) {
   const existingRow = await getProductRow(productKey);
   const existingPayload = existingRow?.payload || {};
   const updatedAt = new Date().toISOString();
-  const newPayload = { ...existingPayload, obActuals, invActuals, updatedAt };
+  const newPayload = { ...existingPayload, obActuals, invActuals, obDetails, invDetails, updatedAt };
 
   const res = await fetch(DASHBOARD_TABLE_URL, {
     method: 'POST',
-    headers: {
-      apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal'
-    },
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify({ id: productKey, payload: newPayload, updated_at: updatedAt })
   });
   if (!res.ok) throw new Error(`Supabase write failed for ${productKey}: ${res.status} ${await res.text()}`);
@@ -123,10 +113,11 @@ function freshTabState() {
   return {
     stage: 'products',
     targetProductIds: null,
-    obMonthly: {}, obMatched: 0, obScanned: 0,
-    invMonthly: {}, invMatched: 0, invScanned: 0,
+    obMonthly: {}, obDetails: {}, obMatched: 0, obScanned: 0,
+    invMonthly: {}, invDetails: {}, invMatched: 0, invScanned: 0,
     page: 1, pageToken: null,
-    basketIndex: 0
+    basketIndex: 0,
+    accountNames: {}, accountNamesPending: null, accountNamesPage: 0
   };
 }
 
@@ -137,7 +128,6 @@ function freshState() {
 async function stepProducts(tab, basketValues, accessToken, apiDomain, deadline) {
   const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
   const ids = new Set(tab.targetProductIds || []);
-
   while (tab.basketIndex < basketValues.length) {
     if (Date.now() > deadline) { tab.targetProductIds = [...ids]; return false; }
     const basket = basketValues[tab.basketIndex];
@@ -148,24 +138,19 @@ async function stepProducts(tab, basketValues, accessToken, apiDomain, deadline)
     if (!res.ok) throw new Error(`Products search failed: ${res.status} ${await res.text()}`);
     const data = await res.json();
     (data.data || []).forEach(p => ids.add(p.id));
-    if (data.info?.more_records) {
-      tab.page++;
-    } else {
-      tab.basketIndex++;
-      tab.page = 1;
-    }
+    if (data.info?.more_records) { tab.page++; } else { tab.basketIndex++; tab.page = 1; }
   }
   tab.targetProductIds = [...ids];
   return true;
 }
 
-async function stepAggregateItems(tab, moduleName, monthlyField, matchedField, scannedField, targetProductIds, accessToken, apiDomain, deadline) {
+async function stepAggregateItems(tab, moduleName, monthlyField, detailsField, matchedField, scannedField, targetProductIds, accessToken, apiDomain, deadline) {
   const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
   const sinceDate = new Date(FY_START);
   const targetSet = new Set(targetProductIds);
 
   while (Date.now() < deadline) {
-    let url = `${apiDomain}/crm/v8/${moduleName}?fields=Product_Name,Net_Total,Created_Time&per_page=200&sort_by=Created_Time&sort_order=desc`;
+    let url = `${apiDomain}/crm/v8/${moduleName}?fields=Product_Name,Net_Total,Created_Time,Parent_Id&per_page=200&sort_by=Created_Time&sort_order=desc`;
     url += tab.pageToken ? `&page_token=${tab.pageToken}` : `&page=${tab.page}`;
     const res = await fetch(url, { headers: authHeader });
     if (res.status === 204) break;
@@ -179,22 +164,53 @@ async function stepAggregateItems(tab, moduleName, monthlyField, matchedField, s
       if (item.Created_Time && new Date(item.Created_Time) < sinceDate) { hitCutoff = true; return; }
       tab[scannedField]++;
       const productId = item.Product_Name?.id;
+      const parentId = item.Parent_Id?.id;
       if (!productId || !targetSet.has(productId)) return;
       const ym = getISTYearMonth(item.Created_Time);
       if (!ym) return;
       const monthLabel = MONTH_NAMES[ym.month];
-      tab[monthlyField][monthLabel] = (tab[monthlyField][monthLabel] || 0) + (item.Net_Total || 0) / 100000;
+      const value = (item.Net_Total || 0) / 100000;
+      tab[monthlyField][monthLabel] = (tab[monthlyField][monthLabel] || 0) + value;
+      if (!tab[detailsField][monthLabel]) tab[detailsField][monthLabel] = [];
+      tab[detailsField][monthLabel].push({ parentId, value: Math.round(value*100)/100, date: item.Created_Time, product: item.Product_Name?.name || null });
       tab[matchedField]++;
     });
 
-    if (hitCutoff || !data.info?.more_records) {
-      tab.page = 1; tab.pageToken = null;
-      return true;
-    }
+    if (hitCutoff || !data.info?.more_records) { tab.page = 1; tab.pageToken = null; return true; }
     tab.pageToken = data.info?.next_page_token || null;
     tab.page++;
   }
   return false;
+}
+
+async function stepAccountNames(tab, accessToken, apiDomain, deadline) {
+  const authHeader = { Authorization: `Zoho-oauthtoken ${accessToken}` };
+  if (!tab.accountNamesPending) {
+    const allParentIds = new Set();
+    Object.values(tab.obDetails).forEach(arr => arr.forEach(d => d.parentId && allParentIds.add(d.parentId)));
+    Object.values(tab.invDetails).forEach(arr => arr.forEach(d => d.parentId && allParentIds.add(d.parentId)));
+    tab.accountNamesPending = [...allParentIds];
+    tab.accountNamesPage = 0;
+  }
+  const CHUNK = 100;
+  while (tab.accountNamesPage * CHUNK < tab.accountNamesPending.length) {
+    if (Date.now() > deadline) return false;
+    const chunk = tab.accountNamesPending.slice(tab.accountNamesPage * CHUNK, (tab.accountNamesPage + 1) * CHUNK);
+    if (chunk.length) {
+      for (const mod of ['Sales_Orders', 'Invoices']) {
+        const stillNeeded = chunk.filter(id => !tab.accountNames[id]);
+        if (!stillNeeded.length) break;
+        const url = `${apiDomain}/crm/v8/${mod}?ids=${stillNeeded.join(',')}&fields=Account_Name,Deal_Name,Subject`;
+        const res = await fetch(url, { headers: authHeader });
+        if (res.ok) {
+          const data = await res.json();
+          (data.data || []).forEach(r => { tab.accountNames[r.id] = r.Account_Name?.name || r.Deal_Name || r.Subject || '—'; });
+        }
+      }
+    }
+    tab.accountNamesPage++;
+  }
+  return true;
 }
 
 module.exports = async (req, res) => {
@@ -225,9 +241,6 @@ module.exports = async (req, res) => {
       const config = PRODUCT_CONFIGS[state.tabIndex];
       const tab = state.tab;
 
-      // Only skip a tab that already synced today if we're at the very start of
-      // it (not resuming mid-tab from a saved cursor) — avoids wasteful/duplicate
-      // re-runs from the multiple scheduled attempts each morning.
       const isFreshTabStart = !forceRestart && tab.stage === 'products' && tab.targetProductIds === null
         && tab.page === 1 && tab.basketIndex === 0;
       if (isFreshTabStart) {
@@ -242,34 +255,33 @@ module.exports = async (req, res) => {
 
       if (tab.stage === 'products') {
         const done = await stepProducts(tab, config.baskets, accessToken, apiDomain, deadline);
-        if (!done) {
-          await saveCursor(state);
-          return res.status(200).json({ complete: false, stage: 'products', tab: config.key, completedTabs, skippedTabs, message: 'Fetching target products, run again to continue.' });
-        }
+        if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: 'products', tab: config.key, completedTabs, skippedTabs, message: 'Fetching target products, run again to continue.' }); }
         tab.stage = 'obItems';
       }
 
       if (tab.stage === 'obItems') {
-        const done = await stepAggregateItems(tab, 'Ordered_Items', 'obMonthly', 'obMatched', 'obScanned', tab.targetProductIds, accessToken, apiDomain, deadline);
-        if (!done) {
-          await saveCursor(state);
-          return res.status(200).json({ complete: false, stage: 'obItems', tab: config.key, scannedSoFar: tab.obScanned, matchedSoFar: tab.obMatched, completedTabs, skippedTabs, message: 'Aggregating Order Booking line items, run again to continue.' });
-        }
+        const done = await stepAggregateItems(tab, 'Ordered_Items', 'obMonthly', 'obDetails', 'obMatched', 'obScanned', tab.targetProductIds, accessToken, apiDomain, deadline);
+        if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: 'obItems', tab: config.key, scannedSoFar: tab.obScanned, matchedSoFar: tab.obMatched, completedTabs, skippedTabs, message: 'Aggregating Order Booking line items, run again to continue.' }); }
         tab.stage = 'invItems';
       }
 
       if (tab.stage === 'invItems') {
-        const done = await stepAggregateItems(tab, 'Invoiced_Items', 'invMonthly', 'invMatched', 'invScanned', tab.targetProductIds, accessToken, apiDomain, deadline);
-        if (!done) {
-          await saveCursor(state);
-          return res.status(200).json({ complete: false, stage: 'invItems', tab: config.key, scannedSoFar: tab.invScanned, matchedSoFar: tab.invMatched, completedTabs, skippedTabs, message: 'Aggregating Invoicing line items, run again to continue.' });
-        }
+        const done = await stepAggregateItems(tab, 'Invoiced_Items', 'invMonthly', 'invDetails', 'invMatched', 'invScanned', tab.targetProductIds, accessToken, apiDomain, deadline);
+        if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: 'invItems', tab: config.key, scannedSoFar: tab.invScanned, matchedSoFar: tab.invMatched, completedTabs, skippedTabs, message: 'Aggregating Invoicing line items, run again to continue.' }); }
+        tab.stage = 'accountNames';
+      }
+
+      if (tab.stage === 'accountNames') {
+        const done = await stepAccountNames(tab, accessToken, apiDomain, deadline);
+        if (!done) { await saveCursor(state); return res.status(200).json({ complete: false, stage: 'accountNames', tab: config.key, completedTabs, skippedTabs, message: 'Fetching account names, run again to continue.' }); }
         tab.stage = 'done';
       }
 
       const roundedOB = round1(tab.obMonthly);
       const roundedInv = round1(tab.invMonthly);
-      const writtenAt = await writeTabResult(config.key, roundedOB, roundedInv);
+      const obDetailsFinal = attachAccountNames(tab.obDetails, tab.accountNames);
+      const invDetailsFinal = attachAccountNames(tab.invDetails, tab.accountNames);
+      const writtenAt = await writeTabResult(config.key, roundedOB, roundedInv, obDetailsFinal, invDetailsFinal);
 
       completedTabs.push({
         key: config.key,
